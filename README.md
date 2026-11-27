@@ -4,6 +4,25 @@ Capture a local geometry disagreement from one IFC file. Compare IfcOpenShell an
 
 [中文说明](README.zh-CN.md) · [Data attribution](fixtures/NOTICE.md) · [Release notes](CHANGELOG.md)
 
+## Open Agentic Web Challenge edition
+
+Open the [public browser replay](https://aevumworks.github.io/ifc-geometry-repro/) and choose **Replay the discrepancy**. The agent delegates to its geometry agent, which calls the site's measurement and provenance actions. **Verify both controls** checks an opening and a solid point on the same buildingSMART wall. Both runs work without a login or model key.
+
+The browser checks the IFC's SHA-256 and builds the web-ifc geometry in a Web Worker. IfcOpenShell supplies a mesh generated from the same fixture at build time. Both crossing calculations run in the browser. Pick a point or enter coordinates to measure a different ray, then download the result as JSON. The browser replays a published subset. Use the CLI for original-size models, new captures, or a completely fresh run of both geometry engines.
+
+The site publishes its [agent manifest](https://aevumworks.github.io/ifc-geometry-repro/agent-manifest.json), [network](https://aevumworks.github.io/ifc-geometry-repro/ifc_geometry.network.json), [link map](https://aevumworks.github.io/ifc-geometry-repro/links.json), and browser runtime under the same HTTPS site base. The two no-key workflows use a deterministic planner. The optional **Use your own model** form runs the same graph with a tool-capable, browser-CORS-enabled OpenAI-compatible router. The key is held in the tab and goes to the selected router in its authorization header. The graph's local site actions require the fixture website. A peer can discover the network and use the public replay link for those actions.
+
+Build and serve the website after `npm ci`:
+
+```sh
+node scripts/build_web.mjs
+node scripts/serve_web.mjs
+```
+
+The replay is then available at `http://127.0.0.1:4173/`. To regenerate the archived meshes after installing the pinned Python dependencies, run `uv run --locked python -m scripts.export_web_evidence`.
+
+The browser runtime is the unmodified Apache-2.0 reference copy at the [challenge's opening snapshot](https://github.com/cognizant-ai-labs/agentic-web/tree/e4a8727d5c6807233b8976f28494bbdac7bc1c6e/skills/agentify-website/runtime). Its license is in [web/runtime/LICENSE.txt](web/runtime/LICENSE.txt). web-ifc is shipped with its own license. IFC fixtures and derived mesh data follow the [fixture attribution](fixtures/NOTICE.md).
+
 ![An offline report showing different surface crossings and the reduction steps](docs/report.png)
 
 ## Try the included case

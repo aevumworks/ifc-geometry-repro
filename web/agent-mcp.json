@@ -1,0 +1,7 @@
+{
+  "protocol": "nsdeploy-agent-mcp/v1",
+  "network": "ifc_geometry",
+  "front_man": "ifc_triage",
+  "available": false,
+  "reason": "Measurements run in the fixture site browser."
+}

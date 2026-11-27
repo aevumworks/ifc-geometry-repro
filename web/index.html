@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Reproduce IFC geometry disagreements at a precise point with independent geometry engines.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self' blob:; connect-src 'self' https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>IFC Geometry Repro</title>
+  <link rel="icon" type="image/png" href="./favicon.png">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to replay</a>
+  <header class="top">
+    <a class="brand" href="./"><span class="mark" aria-hidden="true"></span> Aevum Works</a>
+    <nav aria-label="Project resources">
+      <a href="./agent-manifest.json">Agent manifest</a>
+      <a href="https://github.com/aevumworks/ifc-geometry-repro">Source ↗</a>
+    </nav>
+  </header>
+  <main id="main">
+    <section class="intro" aria-labelledby="title">
+      <div>
+        <h1 id="title">IFC Geometry Repro</h1>
+        <p>Pick a point on a wall. See where two IFC engines intersect it, and whether a one-element file still reproduces the difference.</p>
+      </div>
+      <a class="download-model" href="./data/schependomlaan.ifc" download>↓ One-element IFC</a>
+    </section>
+    <div class="workspace">
+      <aside class="panel cases" aria-labelledby="cases-title">
+        <h2 id="cases-title">Public cases</h2>
+        <button class="case" data-case="schependomlaan" aria-pressed="true"><strong>Schependomlaan</strong><span>Captured discrepancy</span></button>
+        <button class="case" data-case="opening" aria-pressed="false"><strong>Opening control</strong><span>Certification wall</span></button>
+        <button class="case" data-case="solid" aria-pressed="false"><strong>Solid-wall control</strong><span>Certification wall</span></button>
+        <div id="reduction" class="reduction">
+          <span>Verified reduction</span>
+          <strong id="reduction-count">3,714 → 1</strong>
+          <span>IFC elements</span>
+        </div>
+        <details class="provenance">
+          <summary>Case provenance</summary>
+          <dl>
+            <dt>GlobalId</dt><dd id="guid">—</dd>
+            <dt>IFC schema</dt><dd id="schema">—</dd>
+            <dt>IFC SHA-256</dt><dd id="hash">—</dd>
+          </dl>
+          <a href="./data/NOTICE.md">Fixture sources and licenses ↗</a>
+        </details>
+      </aside>
+      <section class="panel evidence" aria-labelledby="case-title">
+        <div class="section-heading">
+          <div><p class="eyebrow" id="case-label">Recorded discrepancy</p><h2 id="case-title">Schependomlaan wall</h2></div>
+          <span id="verdict" data-state="busy">Loading</span>
+        </div>
+        <div class="plot">
+          <canvas id="mesh" width="760" height="350" role="img" aria-describedby="plot-help" aria-label="Projected triangle meshes with the probe marked"></canvas>
+          <p id="plot-help">Pick a point on the section, or enter its coordinates below.</p>
+        </div>
+        <form id="coordinates">
+          <label><span id="u-label">X (m)</span><input id="u" type="number" step="any" required disabled></label>
+          <label><span id="v-label">Z (m)</span><input id="v" type="number" step="any" required disabled></label>
+          <button type="submit" disabled>Measure point</button>
+        </form>
+        <table>
+          <caption class="sr-only">Projected surface crossing depths in metres</caption>
+          <thead><tr><th scope="col">Geometry source</th><th scope="col" id="depth-label">Crossings along Y (m)</th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><i class="engine ifc"></i> IfcOpenShell <small id="ifc-version"></small><span>Exported mesh</span></th><td id="ifc-hits">—</td></tr>
+            <tr><th scope="row"><i class="engine web"></i> web-ifc <small id="web-version"></small><span>Parsed in this browser</span></th><td id="web-hits">—</td></tr>
+          </tbody>
+        </table>
+        <div class="result-row">
+          <p id="measurement-status" role="status" aria-live="polite">Checking the public IFC and starting web-ifc…</p>
+          <button id="export" class="quiet" type="button" disabled>↓ Evidence JSON</button>
+        </div>
+      </section>
+      <section class="panel agents" aria-labelledby="agents-title">
+        <div class="section-heading"><h2 id="agents-title">Geometry Agent</h2></div>
+        <p>Run a guided replay in your browser, or connect a model for free-form questions.</p>
+        <div class="commands">
+          <button data-command="reproduce">Replay the discrepancy <span aria-hidden="true">↗</span></button>
+          <button data-command="controls">Verify both controls <span aria-hidden="true">↗</span></button>
+        </div>
+        <div class="agent-log">
+          <p id="agent-status" role="status" aria-live="polite">Guided replay needs no key.</p>
+          <ol id="agent-trace" aria-label="Agent calls"></ol>
+          <p id="agent-answer" tabindex="-1" hidden></p>
+        </div>
+        <details id="model-settings">
+          <summary>Use your own model</summary>
+          <form id="chat">
+            <label>Router base URL<input id="router" type="url" required value="https://api.openai.com/v1"></label>
+            <label>Model<input id="model" required value="gpt-4.1-mini" maxlength="120"></label>
+            <label>API key<input id="key" type="password" required autocomplete="off"></label>
+            <p>The key stays in this tab and goes only to the selected router. Use a router that supports browser CORS and tool calling.</p>
+            <label>Question<textarea id="question" rows="3" required maxlength="1000" placeholder="Check the result at the archived point."></textarea></label>
+            <button type="submit">Ask the agent</button>
+          </form>
+        </details>
+      </section>
+    </div>
+    <footer><a href="./data/NOTICE.md">Data attribution</a><a href="./ifc_geometry.network.json">Network JSON</a><a href="https://github.com/aevumworks/ifc-geometry-repro/releases/tag/v0.1.0">Full CLI reproducer ↗</a></footer>
+  </main>
+</body>
+</html>

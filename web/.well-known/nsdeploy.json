@@ -1,0 +1,18 @@
+{
+  "protocol": "nsdeploy-link/v1",
+  "exports": [
+    {
+      "url": "ifc_geometry",
+      "network": "ifc_geometry",
+      "aliases": [
+        "ifc_geometry",
+        "ifc_triage"
+      ],
+      "front_man": "ifc_triage"
+    }
+  ],
+  "imports": [],
+  "link_updates": {
+    "mode": "browser-local"
+  }
+}

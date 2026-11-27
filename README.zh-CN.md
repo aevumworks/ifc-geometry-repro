@@ -4,6 +4,12 @@
 
 首个案例来自公开的 Schependomlaan 建筑模型。完整文件含 **3,714 个 IFC 构件**，缩减后只剩 **1 个构件**。同一个测点上，两套引擎的深处交点分别为 **9.10875 米**和 **7.16488 米**。两侧各自的读数在缩减前后保持一致。[案例来源与许可](fixtures/NOTICE.md)
 
+## Open Agentic Web Challenge 参赛版
+
+打开[公开演示](https://aevumworks.github.io/ifc-geometry-repro/)，点击 **Replay the discrepancy** 跟踪 Agent 调用和复现结果。**Verify both controls** 检查 buildingSMART 样例的洞口与实墙位置。两项演示均无需账号或密钥。可点选测点、改坐标并下载证据 JSON。
+
+浏览器先校验小样本的 SHA-256，再用 web-ifc 生成网格，并对这份网格和预先由 IfcOpenShell 生成的网格现场计算交点。重跑完整模型、缩减自己的 IFC 或现场重新生成两套网格，请使用下方命令行工具。[公开 Agent 清单](https://aevumworks.github.io/ifc-geometry-repro/agent-manifest.json)
+
 ## 运行
 
 需要 Python 3.12 或 3.13、Node.js 20 以上和 uv。在仓库根目录执行以下命令。

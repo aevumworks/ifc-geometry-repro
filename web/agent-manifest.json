@@ -1,0 +1,69 @@
+{
+  "brand": "IFC Geometry Repro",
+  "networks": [
+    {
+      "name": "ifc_geometry",
+      "front_man": "ifc_triage",
+      "hocon": "./ifc_geometry.network.json",
+      "description": "Replay IFC surface crossings and check whether a reduced model preserves a geometry discrepancy.",
+      "tags": [
+        "IFC",
+        "BIM",
+        "geometry",
+        "reproducibility"
+      ],
+      "sample_queries": [
+        "Replay the Schependomlaan discrepancy and check the reduction.",
+        "Check the opening and solid wall control points."
+      ]
+    }
+  ],
+  "llm_router": {
+    "base_url": "https://api.openai.com/v1",
+    "byok_router": "https://api.openai.com/v1",
+    "mock": false
+  },
+  "allowed_peers": [],
+  "peer_policy": {
+    "mode": "closed",
+    "deny_origins": []
+  },
+  "actions": {
+    "version": 1,
+    "module": "./site-actions.js",
+    "agentTools": [
+      "measure_case",
+      "case_provenance"
+    ]
+  },
+  "deployment": {
+    "mode": "static",
+    "self_contained_runtime": true,
+    "direct_byok": true
+  },
+  "agent_mcp": {
+    "protocol": "nsdeploy-agent-mcp/v1",
+    "network": "ifc_geometry",
+    "front_man": "ifc_triage",
+    "available": false,
+    "reason": "Measurements run in the fixture site browser."
+  },
+  "linking": {
+    "protocol": "nsdeploy-link/v1",
+    "exports": [
+      {
+        "url": "ifc_geometry",
+        "network": "ifc_geometry",
+        "aliases": [
+          "ifc_geometry",
+          "ifc_triage"
+        ],
+        "front_man": "ifc_triage"
+      }
+    ],
+    "imports": [],
+    "link_updates": {
+      "mode": "browser-local"
+    }
+  }
+}
