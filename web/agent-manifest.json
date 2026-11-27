@@ -34,7 +34,8 @@
     "agentTools": [
       "measure_case",
       "case_provenance"
-    ]
+    ],
+    "bridge": "./bridge/action-bridge.html"
   },
   "deployment": {
     "mode": "static",

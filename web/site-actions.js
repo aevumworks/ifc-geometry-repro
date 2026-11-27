@@ -6,11 +6,12 @@ const preset = {
   description: "schependomlaan for the captured disagreement, opening or solid for a certification wall control",
 };
 
-export function registerActions(actions) {
+export function registerActions(actions, exposure = {}) {
   actions.register({
     name: "measure_case",
     description: "Measure both IFC engines at one public preset. Omit u and v for the recorded point; supply both in metres for a custom point.",
     effect: "read",
+    ...exposure,
     inputSchema: {
       type: "object",
       properties: {preset, u: {type: "number"}, v: {type: "number"}},
@@ -30,6 +31,7 @@ export function registerActions(actions) {
     name: "case_provenance",
     description: "Return fixture sources, hashes, geometry versions, original measurements, and the verified extraction trace if present.",
     effect: "read",
+    ...exposure,
     inputSchema: {type: "object", properties: {preset}, required: ["preset"], additionalProperties: false},
     async execute({preset}) {
       return provenance(preset);

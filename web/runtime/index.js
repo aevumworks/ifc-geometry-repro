@@ -16,8 +16,14 @@ import { Engine } from "./engine.js";
 import { TraceBus } from "./trace.js";
 import { mountApp } from "./ui.js";
 import { getSelectedByokProfile, loadTabByokSetup } from "./byok.js";
+import { OpenRouterConnect } from "./openrouter-connect.js";
+import { OtariConnect } from "./otari-connect.js";
 
 export async function boot(rootSelector = "#app", opts = {}) {
+  // Finish an OpenRouter or Otari sign-in first. It takes the one-time code out of the
+  // address and saves the new key, so the URL and the setup read below are the final ones.
+  // Each finishes only a sign-in this tab started with it.
+  const connect = (await OpenRouterConnect.finish()) || (await OtariConnect.finish());
   const root = typeof rootSelector === "string" ? document.querySelector(rootSelector) : rootSelector;
   if (!root) throw new Error("Agent widget mount not found.");
   root.setAttribute("data-nsdeploy-ui", "");
@@ -40,7 +46,7 @@ export async function boot(rootSelector = "#app", opts = {}) {
   }
   if (ignoredParams.length) {
     const names = ignoredParams.join(", ");
-    console.warn(`Inference settings in the page URL are ignored (${names}). Set them in BYOK / router settings.`);
+    console.warn(`Inference settings in the page URL are ignored (${names}). Set them in AI model settings.`);
   }
   const savedProfile = getSelectedByokProfile();
   const tabSetup = loadTabByokSetup(savedProfile);
@@ -55,19 +61,27 @@ export async function boot(rootSelector = "#app", opts = {}) {
   });
   // Select the agent loop: ?runner=langchain drives the LLM via LangChain.js
   // (neuro-san-web owns the loop). 'langgraph' kept as an alias for older links.
-  const runnerChoice = opts.runner || params.get("runner") || (savedProfile?.runner ? "langchain" : "");
+  // A saved setup's runner flag is ignored, because the panel has no setting to turn it off.
+  const runnerChoice = opts.runner || params.get("runner") || "";
   const { manifest } = await engine.loadTop();
   if (manifest?.deployment?.mode !== "static"
       && (runnerChoice === "langchain" || runnerChoice === "langgraph")) {
     await engine.enableLangChain();
   }
-  mountApp(root, { engine, trace, manifest });
+  mountApp(root, {
+    engine,
+    trace,
+    manifest,
+    connect,
+  });
   {
     const status = document.createElement("details");
     status.className = "ns-action-status";
     status.style.cssText = "flex:none;padding:8px 12px;font-size:12px;max-height:140px;overflow:auto";
     const summary = document.createElement("summary");
     const detail = document.createElement("p");
+    const list = document.createElement("p");
+    list.className = "ns-action-list";
     // website_* tools (runner.js) ask only before irreversible actions. Buttons and forms
     // the visitor submits are always reviewed first.
     const directTools = !!manifest?.actions?.agentTools?.length;
@@ -75,15 +89,25 @@ export async function boot(rootSelector = "#app", opts = {}) {
       ? "You confirm actions that cannot be undone before they run. Other actions run right away."
       : "Actions run after you review and confirm them. Server responses appear as receipts.";
     const update = () => {
-      const count = engine.actions.catalog({ base: engine.top.base, network: engine.top.network.name }).length;
+      const actions = engine.actions.catalog({ base: engine.top.base, network: engine.top.network.name });
+      const count = actions.length;
       summary.textContent = count ? `${count} website actions connected` : "No website actions connected";
       detail.textContent = engine.actions.discoveryIssues.map(i => `${i.page}: ${i.reason}`).join(" ") || (count
         ? reviewed
         : "This agent can collect information, but no website operations are connected.");
+      // Name each action, so the visitor sees what the assistant can do on this page.
+      // With website_* tools only irreversible actions ask first, so only those are marked.
+      const names = [];
+      for (const action of actions) {
+        const name = String(action.name).replace(/_/g, " ");
+        names.push(directTools && action.effect === "irreversible" ? `${name} (asks you first)` : name);
+      }
+      list.textContent = names.length ? `Actions: ${names.join(", ")}.` : "";
+      list.hidden = !names.length;
     };
     engine.actions.onChange = update;
     update();
-    status.append(summary, detail); (root.querySelector(".ns-chat") || root).prepend(status);
+    status.append(summary, detail, list); (root.querySelector(".ns-chat") || root).prepend(status);
   }
   // expose for debugging / e2e tests
   if (typeof window !== "undefined") window.__nsweb = { engine, trace };

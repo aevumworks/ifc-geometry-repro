@@ -20,11 +20,110 @@ import {
   selectByokProfile,
   upsertByokProfile,
 } from "./byok.js";
-import { normalizeModelName } from "./model.js";
+import { effectiveModel, isPlaceholderModel, normalizeModelName } from "./model.js";
 import { normalizePresentation } from "./cruse.js";
 import { PRESENTATION_CSS, renderMarkdown, renderRichComponent } from "./cruse-render.js";
 import { createTurnStatusController } from "./turn-status.js";
-import { reviewActions } from "./action-transport.js";
+import { reviewActions, setActionWindowPrompt } from "./action-transport.js";
+import { OpenRouterConnect } from "./openrouter-connect.js";
+import { OtariConnect } from "./otari-connect.js";
+import { InUseLine } from "./in-use-line.js";
+import { EnterKey } from "./enter-key.js";
+import { isPublisherFundedRouter } from "./engine.js";
+import { trustedHtml } from "./trusted-types.js";
+
+export const AI_MODEL_SETTINGS_LABEL = "AI model settings";
+export const API_KEY_HELP_URL = "https://ai.google.dev/gemini-api/docs/api-key";
+export const API_KEY_PROVIDERS = [
+  // First, because sites built with the agentify-website skill use hosted Otari by default.
+  // Only hosted Otari keys start with "otk_". A self-hosted Otari's keys start with "tk-"
+  // and belong to the visitor's own Otari, so they are not matched here. The Connect with
+  // Otari button (otari-connect.js) gets a key without pasting.
+  {
+    name: OtariConnect.NAME,
+    keyUrl: OtariConnect.KEYS_PAGE_URL,
+    router: OtariConnect.ROUTER,
+    model: OtariConnect.MODEL,
+    keyPrefixes: [OtariConnect.KEY_PREFIX],
+    accessNote: "Billing may be required",
+  },
+  // An otari.ai key belongs to one region, and the other region's gateway refuses it with
+  // HTTP 421. EU keys start with "otk_v1_eu_" and go to the EU gateway. This entry has no
+  // button, because visitors make keys for both regions on the same Otari dashboard.
+  {
+    name: OtariConnect.EU_NAME,
+    keyUrl: OtariConnect.KEYS_PAGE_URL,
+    router: OtariConnect.EU_ROUTER,
+    model: OtariConnect.MODEL,
+    keyPrefixes: [OtariConnect.EU_KEY_PREFIX],
+    accessNote: "Billing may be required",
+    button: false,
+  },
+  {
+    name: "Google AI Studio",
+    keyUrl: "https://aistudio.google.com/apikey",
+    router: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "models/gemini-3.8-flash",
+    keyPrefixes: ["AIza"],
+    accessNote: "Free tier",
+  },
+  {
+    name: "Groq",
+    keyUrl: "https://console.groq.com/keys",
+    router: "https://api.groq.com/openai/v1",
+    model: "openai/gpt-oss-120b",
+    keyPrefixes: ["gsk_"],
+    accessNote: "Free tier",
+  },
+  // The Connect with OpenRouter button (openrouter-connect.js) gets a key without pasting.
+  // This entry is for a pasted OpenRouter key, and it lets the panel recognize either one.
+  {
+    name: OpenRouterConnect.NAME,
+    keyUrl: "https://openrouter.ai/settings/keys",
+    router: OpenRouterConnect.ROUTER,
+    model: OpenRouterConnect.MODEL,
+    keyPrefixes: [OpenRouterConnect.KEY_PREFIX],
+    accessNote: "Free tier",
+  },
+  {
+    name: "OpenAI",
+    keyUrl: "https://platform.openai.com/api-keys",
+    router: "https://api.openai.com/v1",
+    model: "gpt-5.5",
+    keyPrefixes: ["sk-proj-", "sk-svcacct-"],
+    accessNote: "Billing may be required",
+  },
+  {
+    name: "Anthropic",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    router: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-4-6",
+    keyPrefixes: ["sk-ant-"],
+    accessNote: "Billing may be required",
+  },
+];
+
+// The provider whose longest prefix matches the key, so an Otari EU key finds the EU
+// entry and not the general "otk_" one.
+export function providerForApiKey(apiKey) {
+  const key = String(apiKey || "").trim();
+  let match = null;
+  let matchLength = 0;
+  for (const provider of API_KEY_PROVIDERS) {
+    for (const prefix of provider.keyPrefixes) {
+      if (key.startsWith(prefix) && prefix.length > matchLength) {
+        match = provider;
+        matchLength = prefix.length;
+      }
+    }
+  }
+  return match;
+}
+
+// The providers shown as buttons in the settings panel.
+export function providerButtons() {
+  return API_KEY_PROVIDERS.filter((provider) => provider.button !== false);
+}
 
 const BASE_CSS = PRESENTATION_CSS + `
 /* Legacy themes get two resizable panes side by side. Composed themes provide
@@ -62,6 +161,7 @@ const BASE_CSS = PRESENTATION_CSS + `
 .ns-anode .ns-ameta{flex:1;min-width:0}
 .ns-anode .ns-aname{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ns-anode .ns-arole{font-size:11px;color:var(--ns-muted,#999)}
+.ns-anode .ns-aaddr{font-size:11px;color:var(--ns-muted,#999);overflow-wrap:anywhere}
 .ns-anode .ns-adot{width:9px;height:9px;border-radius:50%;background:#cbd5e1;flex:0 0 auto}
 .ns-anode.active{border-color:var(--ns-primary,#2563eb);box-shadow:0 0 0 3px color-mix(in srgb,var(--ns-primary,#2563eb) 18%,transparent)}
 .ns-anode.active .ns-adot{background:var(--ns-primary,#2563eb);animation:ns-pulse 1s ease-in-out infinite}
@@ -192,6 +292,26 @@ fieldset.ns-w-row{min-width:0;margin:0;padding:0;border:0}
 .ns-settings-body button{padding:6px 12px;background:var(--ns-primary,#2563eb);color:#fff;border:0;border-radius:6px;cursor:pointer;align-self:flex-start}
 .ns-settings-body button.ghost{background:transparent;color:var(--ns-muted,#666);border:1px solid var(--ns-border,#ccc)}
 .ns-profile-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ns-key-help{padding:10px;border:1px solid color-mix(in srgb,var(--ns-primary,#2563eb) 30%,var(--ns-border,#ccc));border-radius:8px;background:color-mix(in srgb,var(--ns-primary,#2563eb) 6%,var(--ns-panelbg,#fff));display:flex;flex-direction:column;gap:6px}
+.ns-key-help[hidden]{display:none}
+.ns-key-help p{margin:0;line-height:1.45}
+.ns-key-help>a{color:var(--ns-primary,#2563eb);font-weight:600}
+.ns-key-providers{display:flex;flex-wrap:wrap;gap:6px}
+.ns-key-providers a{padding:6px 9px;border:1px solid var(--ns-primary,#2563eb);border-radius:6px;color:var(--ns-primary,#2563eb);font-weight:600;text-decoration:none;background:var(--ns-panelbg,#fff)}
+.ns-key-providers small{display:block;color:var(--ns-muted,#777);font-size:10px;font-weight:400;margin-top:2px}
+.ns-in-use{font-size:12px;font-weight:600;color:var(--ns-fg,#333);overflow-wrap:anywhere}
+.ns-start-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.ns-start-actions button{align-self:center}
+.ns-or{color:var(--ns-muted,#666)}
+.ns-openrouter-key{display:flex;flex-direction:column;gap:2px}
+.ns-openrouter-key[hidden]{display:none}
+.ns-openrouter-key a{color:var(--ns-primary,#2563eb);font-weight:600}
+.ns-otari-key{display:flex;flex-direction:column;gap:2px}
+.ns-otari-key[hidden]{display:none}
+.ns-otari-key a{color:var(--ns-primary,#2563eb);font-weight:600}
+.ns-settings-advanced{border-top:1px solid var(--ns-border,#e2e2e2);margin-top:2px}
+.ns-settings-advanced>summary{padding:7px 0;color:var(--ns-muted,#666)}
+.ns-settings-advanced-body{display:flex;flex-direction:column;gap:6px;padding:2px 0 4px}
 .ns-hint{font-size:11px;color:var(--ns-muted,#777);margin-top:-2px}
 .ns-hint.warn{color:#b45309;font-weight:600}
 `;
@@ -209,7 +329,7 @@ const KIND_TAG = {
   tool_result: "RESULT",
 };
 
-export function mountApp(root, { engine, trace, manifest }) {
+export function mountApp(root, { engine, trace, manifest, connect = null }) {
   const style = document.createElement("style");
   style.textContent = BASE_CSS;
   document.head.appendChild(style);
@@ -219,8 +339,14 @@ export function mountApp(root, { engine, trace, manifest }) {
 
   const net = engine.top?.network;
   const title = manifest?.networks?.[0]?.description || net?.name || "Agent network";
-  const needsByok = !engine.mockLLM && (!engine.byokKey || engine.byokKey === "demo");
-  const setupMessage = "This site needs your LLM API key before it can answer. Open BYOK / router settings, enter your key, then click Apply, save & reload. Your key stays in this browser and is sent only to the configured provider.";
+  const needsByok = !engine.mockLLM && !engine.publisherFundedLLM && (!engine.byokKey || engine.byokKey === "demo");
+  // The Connect buttons need an https page (or this computer's own address) in its own tab.
+  const canConnect = OpenRouterConnect.isAvailable();
+  const canConnectOtari = OtariConnect.isAvailable();
+  const connectNames = [canConnectOtari && "Connect with Otari", canConnect && "Connect with OpenRouter"].filter(Boolean).join(" or ");
+  const setupMessage = connectNames
+    ? `To start, connect an AI provider. In ⚙ ${AI_MODEL_SETTINGS_LABEL}, select ${connectNames}. Or choose a provider, create a key on its site, paste it into the API key field and select Save and start. Your key is saved in this browser.`
+    : `To start, add an AI provider key. In ⚙ ${AI_MODEL_SETTINGS_LABEL}, choose a provider, create a key on its site, and paste it into the API key field. Then select Save and start. Your key is saved in this browser.`;
   const chatSlot = root.querySelector('[data-ns-slot="chat"]');
   const agentsSlot = root.querySelector('[data-ns-slot="agents"]');
   const activitySlot = root.querySelector('[data-ns-slot="activity"]');
@@ -228,32 +354,71 @@ export function mountApp(root, { engine, trace, manifest }) {
   // Prompt v13 gives themes a dedicated settings mount. Older composed themes and
   // the fixed shell have no such slot, so their settings stay beneath the chat.
   const settingsSlot = composed ? root.querySelector('[data-ns-slot="settings"]') : null;
+  let providerLinksHtml = "";
+  for (const provider of providerButtons()) {
+    // Where the Connect button works, it is how a visitor adds OpenRouter, so OpenRouter
+    // gets no second button that opens its keys page.
+    if (canConnect && provider.name === OpenRouterConnect.NAME) continue;
+    if (canConnectOtari && provider.name === OtariConnect.NAME) continue;
+    providerLinksHtml += `
+        <a href="${escapeHtml(provider.keyUrl)}" target="_blank" rel="noopener noreferrer" data-ns-provider="${escapeHtml(provider.name)}" data-router="${escapeHtml(provider.router)}" data-model="${escapeHtml(provider.model)}">${escapeHtml(provider.name)} <span aria-hidden="true">↗</span><small>${escapeHtml(provider.accessNote)}</small></a>`;
+  }
   const settingsBodyHtml = `
     <div class="ns-settings-body">
+      <div class="ns-in-use" id="ns-in-use"></div>
       <label>Saved setup <select id="ns-profile"></select></label>
-      <label>Setup name <input id="ns-profile-name" placeholder="Local LLM, OpenAI, Anthropic router"></label>
-      <label>API key <input id="ns-key" type="password" placeholder="sk-… (kept in this browser only — enables a REAL LLM)"></label>
-      <label>Model <input id="ns-model" list="ns-model-options" placeholder="exact ID published by the upstream"></label>
-      <datalist id="ns-model-options"></datalist>
-      <label>Router base URL <input id="ns-router" placeholder="OpenAI-compatible /v1"></label>
-      <div id="ns-router-hint" class="ns-hint"></div>
-      <label class="ns-row-inline"><input type="checkbox" id="ns-lg"> Drive the LLM via LangChain.js</label>
-      <div class="ns-profile-actions">
-        <button id="ns-save-profile" class="ghost">Save setup</button>
-        <button id="ns-delete-profile" class="ghost">Delete setup</button>
-        <button id="ns-apply">Apply, save &amp; reload</button>
+      <div class="ns-key-help"${needsByok ? "" : " hidden"}>
+        <strong>Don't have an API key?</strong>
+        <p>An API key is a private code from an AI provider. It lets this page use that provider for you; it is not your password.</p>
+        <a href="${API_KEY_HELP_URL}" target="_blank" rel="noopener noreferrer">What is an API key and how do I get one? <span aria-hidden="true">↗</span></a>
+        <p>Choose a provider below and create a key. Its recommended settings will be filled in for you.</p>
+        <div class="ns-key-providers">${providerLinksHtml}</div>
+        <div class="ns-hint">Free tiers have usage limits and may vary by region. Other providers may require billing.</div>
       </div>
-      <div id="ns-profile-hint" class="ns-hint"></div>
+      <label><span>API key <span aria-hidden="true">*</span></span><input id="ns-key" type="password" autocomplete="off" placeholder="Paste your API key" required aria-required="true"></label>
+      <div class="ns-openrouter-key" hidden>
+        <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer">Manage this key on OpenRouter <span aria-hidden="true">↗</span></a>
+        <div class="ns-hint">See what it spends, set a spending limit, or revoke it.</div>
+      </div>
+      <div class="ns-otari-key" hidden>
+        <a href="${OtariConnect.KEYS_PAGE_URL}" target="_blank" rel="noopener noreferrer">Manage this key on Otari <span aria-hidden="true">↗</span></a>
+        <div class="ns-hint">See what it spends, or revoke it.</div>
+      </div>
+      <div class="ns-start-actions">
+        <button id="ns-apply">Save and start</button>
+        ${canConnectOtari ? `<span class="ns-or">or</span>
+        <button id="ns-connect-otari" type="button">Connect with Otari</button>` : ""}
+        ${canConnect ? `<span class="ns-or">or</span>
+        <button id="ns-connect-openrouter" type="button">Connect with OpenRouter</button>` : ""}
+      </div>
+      ${canConnectOtari ? `<div class="ns-hint">Connect with Otari: sign in to otari.ai and approve a key for this site, with nothing to copy. You choose its spending limit and when it expires.</div>` : ""}
+      ${canConnect ? `<div class="ns-hint">Connect with OpenRouter: sign in and approve a key for this site, with nothing to copy. It uses a free model, which has a daily limit.</div>` : ""}
+      <details class="ns-settings-advanced">
+        <summary>Advanced settings (optional)</summary>
+        <div class="ns-settings-advanced-body">
+          <label>Setup name (optional) <input id="ns-profile-name" placeholder="Local model, Google AI Studio, Groq"></label>
+          <label><span id="ns-model-label">Model (optional)</span> <input id="ns-model" list="ns-model-options" placeholder="Uses this site's model"></label>
+          <datalist id="ns-model-options"></datalist>
+          <label>Provider URL (optional) <input id="ns-router" placeholder="Uses the configured default"></label>
+          <div id="ns-router-hint" class="ns-hint"></div>
+          <div class="ns-profile-actions">
+            <button id="ns-save-profile" class="ghost">Save setup</button>
+            <button id="ns-delete-profile" class="ghost">Delete setup</button>
+          </div>
+        </div>
+      </details>
+      <div id="ns-profile-hint" class="ns-hint">
+      </div>
     </div>`;
   const settingsHtml = `
     <details class="ns-settings"${needsByok ? " open" : ""}>
-      <summary>⚙ BYOK / router settings</summary>
+      <summary>⚙ ${AI_MODEL_SETTINGS_LABEL}</summary>
       ${settingsBodyHtml}
     </details>`;
 
   const headerHtml = `
     <div class="ns-header">
-      ${theme.logo ? `<img class="ns-logo" src="${theme.logo}" alt="logo">` : ""}
+      ${theme.logo ? `<img class="ns-logo" src="${escapeHtml(theme.logo)}" alt="logo">` : ""}
       <div class="ns-title">${escapeHtml(manifest?.brand || net?.name || "neuro-san-web")}</div>
       ${engine.mockLLM
         ? `<div class="ns-llmbadge mock" title="The default router is a deterministic mock — it ignores the model name. Add a real key + router in ⚙ settings.">⚠ MOCK LLM — no real model</div>`
@@ -306,9 +471,9 @@ export function mountApp(root, { engine, trace, manifest }) {
     root.classList.add("ns-composed-app");
     root.dataset.nsLayout = "composed";
     root.dataset.dev = "false";
-    headerSlot.innerHTML = headerHtml;
-    chatSlot.innerHTML = chatHtml;
-    agentsSlot.innerHTML = agentsHtml + devHtml;
+    headerSlot.innerHTML = trustedHtml(headerHtml);
+    chatSlot.innerHTML = trustedHtml(chatHtml);
+    agentsSlot.innerHTML = trustedHtml(agentsHtml + devHtml);
     if (settingsSlot) {
       // A theme can wrap the empty slot in native <details>/<summary> to choose
       // its own gear label and drawer placement. Otherwise the runtime supplies
@@ -317,22 +482,22 @@ export function mountApp(root, { engine, trace, manifest }) {
       if (disclosure && root.contains(disclosure)) {
         disclosure.classList.add("ns-settings");
         if (needsByok) disclosure.open = true;
-        settingsSlot.innerHTML = settingsBodyHtml;
+        settingsSlot.innerHTML = trustedHtml(settingsBodyHtml);
       } else {
-        settingsSlot.innerHTML = settingsHtml;
+        settingsSlot.innerHTML = trustedHtml(settingsHtml);
       }
     }
     if (activitySlot) {
       // Theme prompt v10 briefly exposed a separate activity rail. Keep those
       // themes valid, but retire the empty rail now that status lives in chat.
-      activitySlot.innerHTML = "";
+      activitySlot.replaceChildren();
       activitySlot.hidden = true;
     }
-    root.insertAdjacentHTML("beforeend", modalHtml);
+    root.insertAdjacentHTML("beforeend", trustedHtml(modalHtml));
     app = root;
   } else {
     root.removeAttribute("data-ns-layout");
-    root.innerHTML = `
+    root.innerHTML = trustedHtml(`
       <div class="ns-app" data-dev="false">
         ${headerHtml}
         <main class="ns-main">${chatHtml}</main>
@@ -340,7 +505,7 @@ export function mountApp(root, { engine, trace, manifest }) {
         ${agentsHtml}
         ${modalHtml}
         ${devHtml}
-      </div>`;
+      </div>`);
     app = root.querySelector(".ns-app");
   }
 
@@ -534,7 +699,8 @@ export function mountApp(root, { engine, trace, manifest }) {
 
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") send();
+    // Not the Enter that confirms Japanese, Chinese or Korean input (enter-key.js).
+    if (EnterKey.sendsMessage(e)) send();
   });
   newChatBtn.addEventListener("click", () => {
     engine.resetHistory();
@@ -617,8 +783,12 @@ export function mountApp(root, { engine, trace, manifest }) {
     return { icon: "🧭", label: brand || "" };
   };
   const localHost = location.host;
-  const nodeMeta = new Map(); // host -> {label, role, icon, kind, origin}
+  const nodeMeta = new Map(); // host -> {label, role, icon, kind, origin, address}
   const nodeStatus = new Map(); // host -> idle|active|done
+  // A partner's address is its host and path, such as localhost:8081/marrow_point_harbor_tours,
+  // so the visitor sees which network on that host works for them.
+  const addressOf = (u) => u.host + u.pathname.replace(/\/+$/, "");
+  const networkNameOf = (u) => u.pathname.split("/").filter(Boolean).pop() || u.host;
   {
     const b = splitBrand(manifest?.brand || net?.name);
     nodeMeta.set(localHost, { label: b.label || net?.name, role: "your concierge", icon: b.icon, kind: "local" });
@@ -629,10 +799,12 @@ export function mountApp(root, { engine, trace, manifest }) {
     try {
       if (c.kind === "remote") {
         const u = new URL(ref);
-        if (!nodeMeta.has(u.host)) nodeMeta.set(u.host, { label: u.host, role: "partner network", icon: "🏢", kind: "remote", origin: u.origin });
+        // The same name the consent card uses: this page's link_labels, else the network's.
+        const label = net.linkLabels?.[ref] || networkNameOf(u);
+        if (!nodeMeta.has(u.host)) nodeMeta.set(u.host, { label: label, role: "partner network", icon: "🏢", kind: "remote", origin: u.origin, address: addressOf(u) });
       } else if (c.kind === "mcp") {
         const u = new URL(typeof ref === "string" ? ref : ref.url);
-        if (!nodeMeta.has(u.host)) nodeMeta.set(u.host, { label: "Destination service", role: "hosted MCP server", icon: "🌐", kind: "mcp", origin: u.origin });
+        if (!nodeMeta.has(u.host)) nodeMeta.set(u.host, { label: "Destination service", role: "hosted MCP server", icon: "🌐", kind: "mcp", origin: u.origin, address: addressOf(u) });
       }
     } catch {}
   }
@@ -641,8 +813,10 @@ export function mountApp(root, { engine, trace, manifest }) {
   const statusEl = root.querySelector("#ns-status");
   const statusText = root.querySelector("#ns-status-text");
   const labelOf = (host) => nodeMeta.get(host)?.label || host;
-  const ensureRemoteNode = (host, { brand = "", network = "" } = {}) => {
+  const ensureRemoteNode = (host, { brand = "", network = "", url = "" } = {}) => {
     if (!host || host === localHost) return null;
+    let address = "";
+    try { if (url) address = addressOf(new URL(url)); } catch {}
     let meta = nodeMeta.get(host);
     if (!meta) {
       const display = brand || network || host;
@@ -653,9 +827,13 @@ export function mountApp(root, { engine, trace, manifest }) {
         icon: b.icon || "🏢",
         kind: "remote",
         origin: host.startsWith("http") ? host : `http://${host}`,
+        address: address,
       };
       nodeMeta.set(host, meta);
-    } else if (brand || network) {
+      return meta;
+    }
+    if (address && !meta.address) meta.address = address;
+    if (brand || network) {
       const b = splitBrand(brand || network);
       meta.label = b.label || network || meta.label;
       if (brand) meta.icon = b.icon;
@@ -664,14 +842,18 @@ export function mountApp(root, { engine, trace, manifest }) {
   };
 
   function renderANodes() {
-    anodesEl.innerHTML = "";
+    anodesEl.replaceChildren();
     for (const [host, meta] of nodeMeta) {
       const st = nodeStatus.get(host) || "idle";
       const el = document.createElement("div");
       el.className = "ns-anode " + st;
-      el.innerHTML = `<span class="ns-aicon">${escapeHtml(meta.icon)}</span>` +
-        `<div class="ns-ameta"><div class="ns-aname">${escapeHtml(meta.label)}</div><div class="ns-arole">${escapeHtml(meta.role)}</div></div>` +
-        `<span class="ns-adot" title="${st}"></span>`;
+      // A break after each "/" and "_" lets a long address wrap between its words.
+      const address = meta.address
+        ? `<div class="ns-aaddr">${escapeHtml(meta.address).replace(/[/_]/g, "$&<wbr>")}</div>`
+        : "";
+      el.innerHTML = trustedHtml(`<span class="ns-aicon">${escapeHtml(meta.icon)}</span>` +
+        `<div class="ns-ameta"><div class="ns-aname">${escapeHtml(meta.label)}</div><div class="ns-arole">${escapeHtml(meta.role)}</div>${address}</div>` +
+        `<span class="ns-adot" title="${escapeHtml(st)}"></span>`);
       el.addEventListener("click", () => openInspector(host));
       anodesEl.appendChild(el);
     }
@@ -680,9 +862,10 @@ export function mountApp(root, { engine, trace, manifest }) {
 
   // NB: we deliberately do NOT fetch peer manifests here to pretty-up the labels.
   // That would contact partner origins on page load — before the user has consented
-  // to anything. Partner nodes show their host until the user approves a call and
-  // resolveRemote fetches the peer; the label is then updated from that already-
-  // fetched metadata (see the remote_fetch "end" handler below).
+  // to anything. Partner nodes show the name and address from this page's own config
+  // until the user approves a call and resolveRemote fetches the peer; the label
+  // is then updated from that already-fetched metadata (see the remote_fetch "end"
+  // handler below).
 
   const setActive = (host, busyText) => {
     for (const k of nodeStatus.keys()) if (nodeStatus.get(k) === "active") nodeStatus.set(k, "done");
@@ -698,7 +881,7 @@ export function mountApp(root, { engine, trace, manifest }) {
       switch (ev.kind) {
         case "run": for (const k of nodeStatus.keys()) nodeStatus.set(k, "idle"); setActive(localHost, "Planning your trip…"); break;
         case "remote_fetch":
-          ensureRemoteNode(ev.peerOrigin, { network: ev.network });
+          ensureRemoteNode(ev.peerOrigin, { network: ev.network, url: ev.url });
           setActive(ev.peerOrigin, `Loading ${labelOf(ev.peerOrigin)}…`);
           break;
         case "remote_call":
@@ -739,11 +922,11 @@ export function mountApp(root, { engine, trace, manifest }) {
     statusText.textContent = `Waiting for the ${info.reference} network URL…`;
     const el = document.createElement("div");
     el.className = "ns-msg bot ns-linker";
-    el.innerHTML =
+    el.innerHTML = trustedHtml(
       `<div class="ns-linker-title">Link ${escapeHtml(info.reference)}</div>` +
       `<div class="ns-linker-sub">Enter the root URL of the nsDeploy site that provides this network.</div>` +
       `<form class="ns-linker-form"><input type="url" required placeholder="https://airline.example.com" aria-label="Target nsDeploy site URL">` +
-      `<button type="submit">Link</button><button type="button" class="ghost">Cancel</button></form>`;
+      `<button type="submit">Link</button><button type="button" class="ghost">Cancel</button></form>`);
     msgs.appendChild(el);
     msgs.scrollTop = msgs.scrollHeight;
     const form = el.querySelector("form");
@@ -759,13 +942,13 @@ export function mountApp(root, { engine, trace, manifest }) {
         nodeMeta.set(host, { label: host, role: "linked partner network", icon: "🏢", kind: "remote", origin: new URL(target).origin });
         renderANodes();
       }
-      form.innerHTML = `<div class="ns-consent-done">Linked to ${escapeHtml(host)}. Validating…</div>`;
+      form.innerHTML = trustedHtml(`<div class="ns-consent-done">Linked to ${escapeHtml(host)}. Validating…</div>`);
       statusEl.classList.add("busy");
       statusText.textContent = `Validating ${host}…`;
       resolve(target);
     }, { once: true });
     el.querySelector("button.ghost").addEventListener("click", () => {
-      form.innerHTML = `<div class="ns-consent-done">Linking cancelled.</div>`;
+      form.innerHTML = trustedHtml(`<div class="ns-consent-done">Linking cancelled.</div>`);
       statusText.textContent = "Continuing without that network…";
       resolve(null);
     }, { once: true });
@@ -773,14 +956,17 @@ export function mountApp(root, { engine, trace, manifest }) {
   });
 
   // --- cross-network consent (approve calls to other hosted networks) ------
+  // Each partner's name by host, from its consent card, for the window prompt below.
+  const peerLabels = new Map();
   engine.onConsent = (info) => new Promise((resolve) => {
+    peerLabels.set(info.peerOrigin, info.peerLabel);
     statusEl.classList.remove("busy");
     statusText.textContent = `Waiting for your OK to contact ${info.peerLabel}…`;
     const tokens = info.est?.totalTokens ? `~${Number(info.est.totalTokens).toLocaleString()} tokens` : "";
     const cost = info.est?.costText ? ` (~${info.est.costText})` : "";
     const el = document.createElement("div");
     el.className = "ns-msg bot ns-consent";
-    el.innerHTML =
+    el.innerHTML = trustedHtml(
       `<div class="ns-consent-title">🔗 Contact <b>${escapeHtml(info.peerLabel)}</b> on your behalf?</div>` +
       `<div class="ns-consent-sub">${escapeHtml(info.peerOrigin)}${tokens ? " · est. " + escapeHtml(tokens) + escapeHtml(cost) : ""}</div>` +
       (info.requestText ? `<div class="ns-consent-req">“${escapeHtml(info.requestText.slice(0, 140))}”</div>` : "") +
@@ -788,20 +974,69 @@ export function mountApp(root, { engine, trace, manifest }) {
         `<button data-d="allow">Allow</button>` +
         `<button data-d="always">Always allow</button>` +
         `<button data-d="decline" class="ghost">Decline</button>` +
-      `</div>`;
+      `</div>`);
     msgs.appendChild(el);
     msgs.scrollTop = msgs.scrollHeight;
     el.querySelectorAll("button").forEach((b) =>
       b.addEventListener("click", () => {
         const d = b.dataset.d;
         el.querySelector(".ns-consent-actions").outerHTML =
-          `<div class="ns-consent-done">${d === "decline" ? "✕ Declined" : "✓ Allowed"}</div>`;
+          trustedHtml(`<div class="ns-consent-done">${d === "decline" ? "✕ Declined" : "✓ Allowed"}</div>`);
         statusEl.classList.add("busy");
         statusText.textContent = d === "decline" ? "Skipping that partner…" : `Contacting ${info.peerLabel}…`;
         resolve(d);
       }, { once: true }),
     );
   });
+
+  // --- partner action window (a partner's write opens its own site's window) ----
+  // Asked in the chat, with the partner's name, in place of the transport's generic
+  // dialog. The window opens in the visitor's click, so the browser does not block it.
+  setActionWindowPrompt(({ url, origin, brand, signal }) => new Promise((resolve, reject) => {
+    const host = new URL(origin).host;
+    const label = peerLabels.get(host) || brand || host;
+    statusEl.classList.remove("busy");
+    statusText.textContent = `Waiting for you to open ${label}…`;
+    const el = document.createElement("div");
+    el.className = "ns-msg bot ns-consent ns-action-window";
+    el.innerHTML = trustedHtml(
+      `<div class="ns-consent-title"><b>${escapeHtml(label)}</b> will open its own window, so you can check and finish this there.</div>` +
+      `<div class="ns-consent-sub">Opens on ${escapeHtml(host)}</div>` +
+      `<div class="ns-consent-actions">` +
+        `<button data-d="open">Open ${escapeHtml(label)}</button>` +
+        `<button data-d="cancel" class="ghost">Cancel</button>` +
+      `</div>`);
+    msgs.appendChild(el);
+    msgs.scrollTop = msgs.scrollHeight;
+    const finish = (text) => {
+      const done = document.createElement("div");
+      done.className = "ns-consent-done";
+      done.textContent = text;
+      el.querySelector(".ns-consent-actions")?.replaceWith(done);
+    };
+    const stop = () => {
+      finish("✕ Cancelled");
+      statusEl.classList.add("busy");
+      reject(new Error("Action window cancelled; action not started."));
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    el.querySelector('[data-d="open"]').addEventListener("click", () => {
+      const popup = window.open(url, "_blank", "popup,width=700,height=650");
+      if (!popup) {
+        el.querySelector(".ns-consent-sub").textContent = "Your browser blocked the window. Allow pop-ups for this page, then click again.";
+        return;
+      }
+      signal?.removeEventListener("abort", stop);
+      finish(`✓ Opened ${label}`);
+      statusEl.classList.add("busy");
+      statusText.textContent = `Waiting for ${label}…`;
+      resolve(popup);
+    });
+    el.querySelector('[data-d="cancel"]').addEventListener("click", () => {
+      signal?.removeEventListener("abort", stop);
+      stop();
+    }, { once: true });
+  }));
 
   // --- node inspector (instructions + what the agent did) ------------------
   const modal = root.querySelector("#ns-modal");
@@ -834,19 +1069,19 @@ export function mountApp(root, { engine, trace, manifest }) {
       if (sess) instructions = sess.network.getAgentSpec(sess.network.findFrontMan())?.instructions?.trim() || "";
     }
     const acts = trace.events.filter((ev) => ev.phase !== "update" && (ev.origin === host || ev.peerOrigin === host)).map(friendlyActivity).filter(Boolean);
-    modalCard.innerHTML =
+    modalCard.innerHTML = trustedHtml(
       `<button class="ns-modal-close" title="Close">×</button>` +
       `<h4>${escapeHtml(meta.icon)} ${escapeHtml(meta.label)}</h4>` +
-      `<div class="ns-mrole">${escapeHtml(meta.role)} · ${escapeHtml(host)}</div>` +
+      `<div class="ns-mrole">${escapeHtml(meta.role)} · ${escapeHtml(meta.address || host)}</div>` +
       `<h5>Instructions</h5>` +
       (instructions ? `<pre>${escapeHtml(instructions)}</pre>` : `<div class="ns-mrole">Loaded when first contacted.</div>`) +
       `<h5>What it did this session</h5>` +
-      (acts.length ? acts.map((a) => `<div class="ns-mact">${escapeHtml(a)}</div>`).join("") : `<div class="ns-mrole">Nothing yet.</div>`);
+      (acts.length ? acts.map((a) => `<div class="ns-mact">${escapeHtml(a)}</div>`).join("") : `<div class="ns-mrole">Nothing yet.</div>`));
     modalCard.querySelector(".ns-modal-close").addEventListener("click", closeModal);
     modal.hidden = false;
   }
 
-  // BYOK / router settings. Router, model and key are never read from or written
+  // AI model settings. Router, model and key are never read from or written
   // to the URL. Apply keeps them for this tab in session storage, and saved
   // profiles make them reusable across agent networks.
   let profileStore = loadByokStore();
@@ -857,11 +1092,22 @@ export function mountApp(root, { engine, trace, manifest }) {
   const keyEl = root.querySelector("#ns-key");
   const modelEl = root.querySelector("#ns-model");
   const modelOptionsEl = root.querySelector("#ns-model-options");
-  const langchainEl = root.querySelector("#ns-lg");
   const hintEl = root.querySelector("#ns-router-hint");
   const profileHintEl = root.querySelector("#ns-profile-hint");
   const saveProfileBtn = root.querySelector("#ns-save-profile");
   const deleteProfileBtn = root.querySelector("#ns-delete-profile");
+  const providerLinks = root.querySelectorAll("[data-ns-provider]");
+  // The help is for visitors without a key, so it hides while the key field has one.
+  const keyHelpEl = root.querySelector(".ns-key-help");
+  // An OpenRouter key, connected or pasted, gets a link to its settings page on OpenRouter.
+  const openRouterKeyEl = root.querySelector(".ns-openrouter-key");
+  // An otari.ai key gets a link to the keys page on otari.ai.
+  const otariKeyEl = root.querySelector(".ns-otari-key");
+  const refreshKeyHelp = () => {
+    if (keyHelpEl) keyHelpEl.hidden = keyEl.value.trim().length > 0;
+    OpenRouterConnect.refreshKeyLink(keyEl, openRouterKeyEl);
+    OtariConnect.refreshKeyLink(keyEl, otariKeyEl);
+  };
   // The compiled LLM may already point at BYOK after a saved-profile upgrade.
   // New manifests identify an opt-in mock separately; retain compatibility with
   // older manifests where the mock was the declared default base URL.
@@ -869,14 +1115,50 @@ export function mountApp(root, { engine, trace, manifest }) {
     || (manifest?.llm_router?.mock ? manifest?.llm_router?.base_url : "");
   const byokRouter = engine.byokRouter || "";
   const staticMode = manifest?.deployment?.mode === "static";
+  // Name the provider, model and key the chat uses now (in-use-line.js). The router is the
+  // one the chat calls, after the setup and any upgrade from the mock router.
+  const activeRouter = engine.top?.llm?.baseUrl || "";
+  const inUseEl = root.querySelector("#ns-in-use");
+  inUseEl.textContent = InUseLine.text({
+    mock: engine.mockLLM,
+    publisherFunded: engine.publisherFundedLLM,
+    key: engine.byokKey,
+    router: activeRouter,
+    model: engine.modelOverride,
+    siteModel: effectiveModel("", frontSpec?.llm_config?.model_name, net?.config?.llm_config?.model_name),
+    providers: API_KEY_PROVIDERS,
+    viaThisSite: !staticMode && !!byokRouter && resolveByokRouter(activeRouter) === resolveByokRouter(byokRouter),
+  });
+  inUseEl.title = activeRouter;
+  // Without a visitor-chosen model, each agent sends its declared model, then the
+  // network's, or else the mock placeholder. Check the same model the runner sends.
+  let everyAgentHasModel = true;
+  // The front man and "agent" tools call a model; coded and toolbox tools do not.
+  for (const spec of net?.config?.tools || []) {
+    const callsModel = spec === frontSpec || net.classifyTool(spec?.name).kind === "agent";
+    const sent = effectiveModel("", spec?.llm_config?.model_name, net?.config?.llm_config?.model_name);
+    if (callsModel && isPlaceholderModel(sent)) everyAgentHasModel = false;
+  }
+  // The Model field is optional only when every agent already has a model. Otherwise it
+  // is marked required, like the API key.
+  if (!everyAgentHasModel) {
+    root.querySelector("#ns-model-label").innerHTML = trustedHtml('Model <span aria-hidden="true">*</span>');
+    modelEl.placeholder = "Enter a model your provider supports";
+    modelEl.required = true;
+    modelEl.setAttribute("aria-required", "true");
+  }
 
   routerEl.value = engine.routerOverride || engine.top?.llm?.baseUrl || byokRouter || mockUrl;
   modelEl.value = engine.modelOverride || "";
   // The key shown comes from the same source as the router and model the engine
   // uses, so it never shows another setup's key next to this tab's router.
   keyEl.value = loadTabByokSetup(selectedProfile).key;
+  // The provider whose settings the form holds. Another key from the same provider
+  // does not fill in that provider's defaults again.
+  let formProvider = providerForApiKey(keyEl.value);
+  OpenRouterConnect.refreshKeyLink(keyEl, openRouterKeyEl);
+  OtariConnect.refreshKeyLink(keyEl, otariKeyEl);
   profileNameEl.value = selectedProfile?.name || "";
-  langchainEl.checked = !!engine.agentRunner;
 
   const profileStorageText = canUseByokCookie()
     ? "Saved setups are kept in this browser and mirrored to a local cookie, so they follow nsDeploy across localhost ports."
@@ -884,8 +1166,8 @@ export function mountApp(root, { engine, trace, manifest }) {
 
   const profileLabel = (p) => `${p.name || guessByokProfileName(p)}${p.model ? ` (${p.model})` : ""}`;
   const refreshProfileOptions = (selectedId = profileStore.selectedId) => {
-    profileEl.innerHTML = `<option value="">Custom / unsaved</option>` +
-      profileStore.profiles.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(profileLabel(p))}</option>`).join("");
+    profileEl.innerHTML = trustedHtml(`<option value="">Custom / unsaved</option>` +
+      profileStore.profiles.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(profileLabel(p))}</option>`).join(""));
     profileEl.value = profileStore.profiles.some((p) => p.id === selectedId) ? selectedId : "";
     deleteProfileBtn.disabled = !profileEl.value;
   };
@@ -897,9 +1179,10 @@ export function mountApp(root, { engine, trace, manifest }) {
     if (!profile) return;
     profileNameEl.value = profile.name || "";
     keyEl.value = profile.key || "";
+    formProvider = providerForApiKey(keyEl.value);
+    refreshKeyHelp();
     modelEl.value = profile.model || "";
     routerEl.value = resolveByokRouter(profile.router || "");
-    langchainEl.checked = !!profile.runner;
     refreshHint();
   };
   const currentProfileDraft = (id) => {
@@ -916,12 +1199,16 @@ export function mountApp(root, { engine, trace, manifest }) {
       key,
       model,
       router: portableByokRouter(router),
-      runner: langchainEl.checked,
+      runner: false,
     };
   };
   const saveCurrentProfile = () => {
     const draft = currentProfileDraft(profileEl.value);
-    if (!draft.key && !draft.model && !draft.router) return null;
+    if (!draft.key) {
+      setProfileHint("API key is required. Paste your key above to continue.", "warn");
+      keyEl.focus();
+      return null;
+    }
     const res = upsertByokProfile(draft, { select: true });
     if (!res.profile) return null;
     profileStore = res.store;
@@ -950,19 +1237,34 @@ export function mountApp(root, { engine, trace, manifest }) {
     const hasKey = keyEl.value.trim().length > 0;
     if (hasKey && isMockRouter(routerEl.value.trim())) {
       hintEl.className = "ns-hint warn";
-      hintEl.textContent = `⚠ This router is the MOCK (ignores your key). It will be switched to the real proxy ${byokRouter || ""} on Apply.`;
+      hintEl.textContent = `⚠ This router is the MOCK (ignores your key). It will be switched to the real proxy ${byokRouter || ""} when you save.`;
     } else if (isMockRouter(routerEl.value.trim())) {
       hintEl.className = "ns-hint";
       hintEl.textContent = `Mock router (no key needed). To use a real LLM, enter a key — it will route via ${byokRouter || "the proxy"}.`;
     } else {
       hintEl.className = "ns-hint";
-      hintEl.textContent = staticMode
-        ? "Real LLM router. Your key is sent directly from this browser to that router; it must allow browser CORS."
-        : "Real LLM router. Your key is sent only here (a CORS pass-through to your provider).";
+      const viaThisSite = !staticMode && !!byokRouter
+        && resolveByokRouter(routerEl.value) === resolveByokRouter(byokRouter);
+      hintEl.textContent = viaThisSite
+        ? "This site passes your key on to your AI provider."
+        : !routerEl.value.trim() && hasKey && byokRouter
+          ? `Your browser sends your key directly to ${byokRouter}, this site's router for visitors' own keys.`
+          : "Your browser sends your key directly to the Provider URL above.";
     }
+  };
+  const applyProviderDefaults = (provider, message) => {
+    formProvider = provider;
+    routerEl.value = provider.router;
+    modelEl.value = provider.model;
+    profileNameEl.value = provider.name;
+    profileEl.value = "";
+    if (message) setProfileHint(message);
+    refreshHint();
   };
   const fetchAvailableModels = async (router, key) => {
     if (!router || isMockRouter(router)) return null;
+    // The model check must not send a visitor's key to the router this site pays for.
+    if (key && isPublisherFundedRouter(manifest, router)) return null;
     try {
       const response = await fetch(`${router.replace(/\/$/, "")}/models`, {
         cache: "no-store",
@@ -973,7 +1275,7 @@ export function mountApp(root, { engine, trace, manifest }) {
       const models = (Array.isArray(body?.data) ? body.data : [])
         .map((item) => normalizeModelName(item?.id))
         .filter(Boolean);
-      modelOptionsEl.innerHTML = "";
+      modelOptionsEl.replaceChildren();
       for (const id of models) {
         const option = document.createElement("option");
         option.value = id;
@@ -985,18 +1287,62 @@ export function mountApp(root, { engine, trace, manifest }) {
       return null;
     }
   };
+  // True when a turn would send a real router an empty model or the mock
+  // placeholder, which the runtime refuses. A chosen model is what every agent
+  // sends; without one, each agent's own model counts.
+  const lacksModel = (requireActiveKey, router, key, model) => {
+    // A send uses the applied setup.
+    if (requireActiveKey) {
+      if (engine.mockLLM) return false;
+      if (engine.modelOverride) return isPlaceholderModel(engine.modelOverride);
+      return !everyAgentHasModel;
+    }
+    // Apply checks the form it is about to save.
+    if (!key || key === "demo") return false;
+    // With a real key, Apply switches a mock router to the BYOK router.
+    const nextRouter = byokRouter && isMockRouter(router) ? byokRouter : router;
+    if (isMockRouter(nextRouter)) return false;
+    if (model) return isPlaceholderModel(model);
+    return !everyAgentHasModel;
+  };
+  // The Model field is inside the collapsed advanced settings, so open them before focusing it.
+  const focusModelField = () => {
+    root.querySelector(".ns-settings-advanced").open = true;
+    modelEl.focus();
+  };
+  // Ask for a model. Mention the Model field's suggestions only when an earlier
+  // /models lookup filled them; this adds no request of its own.
+  const modelSetupMessage = () => {
+    const choice = modelOptionsEl.options.length
+      ? "Pick a suggested model in the Model field, or enter another model your provider supports"
+      : "Enter a model your provider supports in the Model field";
+    return `This site needs a model name before it can answer with your key. ${choice}, then select Save and start.`;
+  };
   validateConfiguredModel = async (requireActiveKey = true) => {
     let router = routerEl.value.trim();
     const key = keyEl.value.trim();
     const model = normalizeModelName(modelEl.value);
     modelEl.value = model;
-    if (requireActiveKey && !engine.mockLLM && (!engine.byokKey || engine.byokKey === "demo")) {
+    if (requireActiveKey && !engine.mockLLM && !engine.publisherFundedLLM && (!engine.byokKey || engine.byokKey === "demo")) {
       const message = key
-        ? "Your API key is ready. Click Apply, save & reload before sending a request."
+        ? "Your API key is ready. Select Save and start before sending a request."
         : setupMessage;
       setProfileHint(message, "warn");
       root.querySelector(".ns-settings").open = true;
       (key ? root.querySelector("#ns-apply") : keyEl).focus();
+      addBubble(msgs, "bot", `⚠️ ${message}`);
+      return false;
+    }
+    if (lacksModel(requireActiveKey, router, key, model)) {
+      // A usable model typed but not applied yet only needs Apply.
+      const unapplied = requireActiveKey && !!model && !isPlaceholderModel(model);
+      const message = unapplied
+        ? "Your model is ready. Select Save and start before sending a request."
+        : modelSetupMessage();
+      setProfileHint(message, "warn");
+      root.querySelector(".ns-settings").open = true;
+      if (unapplied) root.querySelector("#ns-apply").focus();
+      else focusModelField();
       addBubble(msgs, "bot", `⚠️ ${message}`);
       return false;
     }
@@ -1016,13 +1362,48 @@ export function mountApp(root, { engine, trace, manifest }) {
       "warn",
     );
     root.querySelector(".ns-settings").open = true;
-    modelEl.focus();
+    focusModelField();
     return false;
   };
-  // When a key is entered against the mock router, auto-fill the real proxy.
+  // Put back the site's own settings in place of those a provider's key filled in,
+  // leaving any field the visitor has changed.
+  const clearProviderDefaults = (provider) => {
+    if (routerEl.value.trim() === provider.router) routerEl.value = byokRouter || mockUrl;
+    if (modelEl.value.trim() === provider.model) modelEl.value = "";
+    if (profileNameEl.value.trim() === provider.name) profileNameEl.value = "";
+    formProvider = null;
+  };
+  // The page cannot tell which provider an unrecognized key is for, so the visitor checks
+  // the Provider URL, and enters a model when the site needs one.
+  const unrecognizedKeyMessage = () => {
+    const needsModel = !everyAgentHasModel && !modelEl.value.trim();
+    return "The page can't tell which provider this key is for. Check the Provider URL, "
+      + (needsModel ? "enter a model your provider supports in the Model field, " : "")
+      + "then select Save and start.";
+  };
+  // A key from a newly detected provider fills in that provider's settings, so editing
+  // the key keeps a model or router the visitor chose. Any other key entered against
+  // the mock router switches it to the real proxy.
   keyEl.addEventListener("input", () => {
-    if (keyEl.value.trim() && byokRouter && isMockRouter(routerEl.value.trim())) routerEl.value = byokRouter;
+    const key = keyEl.value.trim();
+    const provider = providerForApiKey(key);
+    if (provider && provider !== formProvider) {
+      applyProviderDefaults(provider, `${provider.name} key detected. Recommended settings are ready.`);
+    } else if (!provider && key) {
+      // Another provider's settings must not stay with this key, and a real key never goes
+      // to the mock. Then show the Provider URL and Model fields and ask for a check.
+      if (formProvider) clearProviderDefaults(formProvider);
+      if (byokRouter && isMockRouter(routerEl.value.trim())) routerEl.value = byokRouter;
+      // An unknown key must not go to the router this site pays for. An empty box means
+      // "use the configured default", which with a key is byok_router.
+      if (isPublisherFundedRouter(manifest, routerEl.value.trim())) routerEl.value = "";
+      root.querySelector(".ns-settings-advanced").open = true;
+      setProfileHint(unrecognizedKeyMessage());
+    } else if (!key && needsByok) {
+      setProfileHint(setupMessage, "warn");
+    }
     if (profileEl.value && selectedProfile?.key !== keyEl.value.trim()) profileEl.value = "";
+    refreshKeyHelp();
     refreshHint();
   });
   routerEl.addEventListener("input", refreshHint);
@@ -1033,13 +1414,35 @@ export function mountApp(root, { engine, trace, manifest }) {
     if (!profileNameEl.value.trim()) profileNameEl.value = guessByokProfileName({ router: routerEl.value, model: modelEl.value });
     refreshHint();
   });
+  providerLinks.forEach((link) => {
+    link.addEventListener("click", () => {
+      const provider = API_KEY_PROVIDERS.find((candidate) => candidate.name === link.dataset.nsProvider);
+      if (!provider) return;
+      // A key recognized as another provider's must not be sent to this provider.
+      const keyProvider = providerForApiKey(keyEl.value.trim());
+      if (keyProvider && keyProvider !== provider) keyEl.value = "";
+      refreshKeyHelp();
+      applyProviderDefaults(provider, `${provider.name} selected. Create a key in the new tab, then paste it here.`);
+    });
+  });
+  // Connect with OpenRouter leaves this page. When OpenRouter sends the visitor back,
+  // boot() finishes the sign-in before this panel is built (openrouter-connect.js).
+  const keyLabel = OpenRouterConnect.keyLabel(manifest?.brand || net?.name || "");
+  root.querySelector("#ns-connect-openrouter")?.addEventListener(
+    "click",
+    OpenRouterConnect.connect.bind(OpenRouterConnect, keyLabel, setProfileHint),
+  );
+  root.querySelector("#ns-connect-otari")?.addEventListener(
+    "click",
+    OtariConnect.connect.bind(OtariConnect, setProfileHint),
+  );
   profileEl.addEventListener("change", () => {
     const id = profileEl.value;
     profileStore = selectByokProfile(id);
     selectedProfile = getSelectedByokProfile(profileStore);
     if (selectedProfile) {
       applyProfileToForm(selectedProfile);
-      setProfileHint(`Loaded setup "${selectedProfile.name}". Click Apply to use it for this page.`);
+      setProfileHint(`Loaded setup "${selectedProfile.name}". Select Save and start to use it for this page.`);
     } else {
       profileNameEl.value = "";
       setProfileHint();
@@ -1061,19 +1464,32 @@ export function mountApp(root, { engine, trace, manifest }) {
   });
   refreshHint();
   if (needsByok) setProfileHint(setupMessage, "warn");
+  // Report the OpenRouter or Otari sign-in that boot() finished before this panel existed.
+  if (connect) {
+    const connected = connect.status === "connected";
+    setProfileHint(connect.message, connected ? "" : "warn");
+    addBubble(msgs, "bot", connected ? connect.message : `⚠️ ${connect.message}`);
+    if (!connected) root.querySelector(".ns-settings").open = true;
+  }
 
   root.querySelector("#ns-apply").addEventListener("click", async () => {
     const p = new URLSearchParams(location.search);
     p.delete("key"); // the key must never appear in the URL
+    const key = keyEl.value.trim();
     const model = normalizeModelName(modelEl.value);
     modelEl.value = model;
+    if (!key) {
+      setProfileHint("API key is required. Paste your key above to continue.", "warn");
+      root.querySelector(".ns-settings").open = true;
+      keyEl.focus();
+      return;
+    }
     if (!await validateConfiguredModel(false)) return;
     const saved = saveCurrentProfile();
     // Key, router and model stay with this tab in session storage, never in the
     // query string. Boot reads them after the reload, so a setup that another tab
     // or port selects later cannot pair this tab's key with a different router.
     saveTabByokSetup(saved);
-    if (langchainEl.checked) p.set("runner", "langchain"); else p.delete("runner");
     const qs = p.toString();
     // Rewrite the (key-free) query string, then reload so the applied setup takes effect.
     try { history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash); } catch {}
@@ -1251,25 +1667,25 @@ function renderWidget(container, spec, onSubmit, turnId) {
   if (spec.description) html += `<div class="ns-w-desc">${escapeHtml(spec.description)}</div>`;
 
   if (kind === "action") {
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
     const button = document.createElement("button");
     button.className = "ns-w-btn"; button.textContent = spec.label || "Review action";
     button.onclick = () => submit(button.textContent, {});
     card.append(button);
   } else if (["report", "table", "chart", "html"].includes(kind)) {
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
     const body = document.createElement("div");
     renderRichComponent(body, spec);
     card.append(body);
   } else if (kind === "confirm") {
     html += `<div class="ns-w-actions"><button class="ns-w-btn" data-act="confirm">${escapeHtml(spec.confirmLabel || "Confirm")}</button><button class="ns-w-btn ghost" data-act="cancel">${escapeHtml(spec.cancelLabel || "Cancel")}</button></div>`;
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
     card.querySelector('[data-act="confirm"]').addEventListener("click", () => submit(spec.confirmText || spec.confirmLabel || "Confirm", { action: "confirm" }));
     card.querySelector('[data-act="cancel"]').addEventListener("click", () => submit(spec.cancelText || "Not yet, hold off.", { action: "cancel" }));
   } else if (kind === "choice") {
     html += `<div class="ns-w-choices">` + (spec.options || []).map((o, idx) =>
       `<button class="ns-w-choice" data-idx="${idx}"><div class="ns-w-ctitle">${escapeHtml(o.title || o.value || "")}</div>${o.subtitle ? `<div class="ns-w-csub">${escapeHtml(o.subtitle)}</div>` : ""}${o.meta ? `<div class="ns-w-cmeta">${escapeHtml(o.meta)}</div>` : ""}</button>`).join("") + `</div>`;
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
     card.querySelectorAll(".ns-w-choice").forEach((b) => b.addEventListener("click", () => {
       const o = (spec.options || [])[+b.dataset.idx];
       submit(`${spec.choosePrefix || "I'll go with"}: ${o.title || o.value}`, { value: o.value ?? o.title });
@@ -1277,14 +1693,14 @@ function renderWidget(container, spec, onSubmit, turnId) {
   } else if (kind === "info") {
     html += `<div class="ns-w-fields">` + Object.entries(spec.fields || {}).map(([k, v]) =>
       `<div class="ns-w-field"><span class="ns-w-fk">${escapeHtml(k)}</span><span class="ns-w-fv">${escapeHtml(String(v))}</span></div>`).join("") + `</div>`;
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
   } else { // form
     const props = (spec.schema && spec.schema.properties) || {};
     const required = (spec.schema && spec.schema.required) || [];
     const entries = Object.entries(props);
     html += `<form class="ns-w-form">` + entries.map(([key, f], i) => renderField("f" + i, key, f, required.includes(key))).join("") +
       `<div class="ns-w-actions"><button type="submit" class="ns-w-btn">${escapeHtml(spec.submitLabel || "Submit")}</button></div></form>`;
-    card.innerHTML = html;
+    card.innerHTML = trustedHtml(html);
     entries.forEach(([key, field], i) => {
       const control = card.querySelector(`[data-field="f${i}"]`) || card.querySelector(`input[name="f${i}"]`);
       if (!control) return;
@@ -1336,7 +1752,7 @@ function renderNodes(el, net, activeAgents, activeOrigins = new Set()) {
 
   function box(cls, icon, label, { active = false, dot = false, title = "" } = {}) {
     return `<div class="ns-tbox ${cls}${active ? " active" : ""}"${title ? ` title="${escapeHtml(title)}"` : ""}>` +
-      `${icon ? `<span class="ns-ticon">${icon}</span>` : ""}<span>${escapeHtml(label)}</span>` +
+      `${icon ? `<span class="ns-ticon">${escapeHtml(icon)}</span>` : ""}<span>${escapeHtml(label)}</span>` +
       `${dot ? '<span class="ns-tdot"></span>' : ""}</div>`;
   }
 
@@ -1367,7 +1783,7 @@ function renderNodes(el, net, activeAgents, activeOrigins = new Set()) {
   const top = [];
   if (front) top.push(`<li>${node(front)}</li>`);
   for (const n of specByName.keys()) if (isAgent(n) && !rendered.has(n)) top.push(`<li>${node(n)}</li>`);  // orphans
-  el.innerHTML = `<ul class="ns-tree">${top.join("")}</ul>`;
+  el.innerHTML = trustedHtml(`<ul class="ns-tree">${top.join("")}</ul>`);
 }
 
 function rowLabel(ev) {
@@ -1388,10 +1804,10 @@ function rowLabel(ev) {
     case "remote_call": detail = `${escapeHtml(ev.brand || ev.network || ev.peerOrigin || "")} <span class="ns-meta">@ ${escapeHtml(ev.peerOrigin || "")} · via ${escapeHtml(ev.method || "")}</span>`; break;
     case "mcp_call": detail = `${escapeHtml(ev.method || "")} <span class="ns-meta">@ ${escapeHtml(ev.peerOrigin || "")}</span>`; break;
     case "tool_result": detail = `${escapeHtml(ev.tool || "")} <span class="ns-meta">${escapeHtml((ev.preview || "").slice(0, 80))}</span>`; break;
-    case "presentation_proposal": detail = `${escapeHtml(ev.agent || "")} <span class="ns-meta">${ev.presentation?.components?.length || 0} components</span>`; break;
+    case "presentation_proposal": detail = `${escapeHtml(ev.agent || "")} <span class="ns-meta">${Number(ev.presentation?.components?.length) || 0} components</span>`; break;
     default: detail = "";
   }
-  return `<span class="ns-tag">${tag}</span>${detail}`;
+  return `<span class="ns-tag">${escapeHtml(tag)}</span>${detail}`;
 }
 
 function detailJson(ev) {
@@ -1407,7 +1823,7 @@ function addRow(rows, ev, marker) {
   div.className = `ns-row k-${ev.kind}` + (ev.status === "error" ? " status-error" : "");
   if (ev.id) div.dataset.id = ev.id;
   const json = detailJson(ev);
-  div.innerHTML = `<div class="ns-line">${rowLabel(ev)}</div>` + (json ? `<pre style="display:none">${escapeHtml(json)}</pre>` : "");
+  div.innerHTML = trustedHtml(`<div class="ns-line">${rowLabel(ev)}</div>` + (json ? `<pre style="display:none">${escapeHtml(json)}</pre>` : ""));
   if (json) {
     div.addEventListener("click", () => {
       const pre = div.querySelector("pre");
@@ -1426,7 +1842,7 @@ function updateRow(rows, ev) {
   if (ev.status === "error") existing.classList.add("status-error");
   const ms = ev.durationMs != null ? ` <span class="ns-meta">· ${Math.round(ev.durationMs)}ms</span>` : "";
   const err = ev.error ? ` <span class="ns-meta" style="color:#dc2626">· ${escapeHtml(ev.error)}</span>` : "";
-  existing.querySelector(".ns-line").innerHTML = rowLabel(ev) + ms + err;
+  existing.querySelector(".ns-line").innerHTML = trustedHtml(rowLabel(ev) + ms + err);
   const json = detailJson(ev);
   if (json) {
     let pre = existing.querySelector("pre");

@@ -10,7 +10,7 @@ Open the [public browser replay](https://aevumworks.github.io/ifc-geometry-repro
 
 The browser checks the IFC's SHA-256 and builds the web-ifc geometry in a Web Worker. IfcOpenShell supplies a mesh generated from the same fixture at build time. Both crossing calculations run in the browser. Pick a point or enter coordinates to measure a different ray, then download the result as JSON. The browser replays a published subset. Use the CLI for original-size models, new captures, or a completely fresh run of both geometry engines.
 
-The site publishes its [agent manifest](https://aevumworks.github.io/ifc-geometry-repro/agent-manifest.json), [network](https://aevumworks.github.io/ifc-geometry-repro/ifc_geometry.network.json), [link map](https://aevumworks.github.io/ifc-geometry-repro/links.json), and browser runtime under the same HTTPS site base. The two no-key workflows use a deterministic planner. The optional **Use your own model** form runs the same graph with a tool-capable, browser-CORS-enabled OpenAI-compatible router. The key is held in the tab and goes to the selected router in its authorization header. The graph's local site actions require the fixture website. A peer can discover the network and use the public replay link for those actions.
+The site publishes its [agent manifest](https://aevumworks.github.io/ifc-geometry-repro/agent-manifest.json), [network](https://aevumworks.github.io/ifc-geometry-repro/ifc_geometry.network.json), [link map](https://aevumworks.github.io/ifc-geometry-repro/links.json), and browser runtime under the same HTTPS site base. The two no-key workflows use a deterministic planner. The optional **Use your own model** form runs the same graph with a tool-capable, browser-CORS-enabled OpenAI-compatible router. The key is held in the tab and goes to the selected router in its authorization header. A compatible peer can call the same read-only measurement and provenance tools through the action bridge at the fixture site. The inputs and results are limited to public cases.
 
 Build and serve the website after `npm ci`:
 
@@ -21,7 +21,7 @@ node scripts/serve_web.mjs
 
 The replay is then available at `http://127.0.0.1:4173/`. To regenerate the archived meshes after installing the pinned Python dependencies, run `uv run --locked python -m scripts.export_web_evidence`.
 
-The browser runtime is the unmodified Apache-2.0 reference copy at the [challenge's opening snapshot](https://github.com/cognizant-ai-labs/agentic-web/tree/e4a8727d5c6807233b8976f28494bbdac7bc1c6e/skills/agentify-website/runtime). Its license is in [web/runtime/LICENSE.txt](web/runtime/LICENSE.txt). web-ifc is shipped with its own license. IFC fixtures and derived mesh data follow the [fixture attribution](fixtures/NOTICE.md).
+The site targets [MVP Profile 0.2 at the challenge's opening snapshot](https://github.com/cognizant-ai-labs/agentic-web/blob/e4a8727d5c6807233b8976f28494bbdac7bc1c6e/docs/worldwide_agentic_web_mvp_spec.md) and includes the unmodified [reference runtime at 90d561d](https://github.com/cognizant-ai-labs/agentic-web/tree/90d561d6185d3b5625f9d8055da4d259074af745/skills/agentify-website/runtime) for its peer action bridge. Its Apache-2.0 license is in [web/runtime/LICENSE.txt](web/runtime/LICENSE.txt). web-ifc is shipped with its own license. IFC fixtures and derived mesh data follow the [fixture attribution](fixtures/NOTICE.md).
 
 ![An offline report showing different surface crossings and the reduction steps](docs/report.png)
 

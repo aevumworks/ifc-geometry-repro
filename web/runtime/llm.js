@@ -1,6 +1,8 @@
 // llm.js — the LlmClient intrinsic: an OpenAI-compatible chat-completions client.
+// Changed by agentic-web. See README.md in this folder for what changed.
 
-import { normalizeModelName } from "./model.js";
+import { assertModelForRouter, normalizeModelName } from "./model.js";
+import { ProviderError } from "./provider-error.js";
 
 function hostOf(url) {
   try { return new URL(url).host; } catch { return url || "?"; }
@@ -50,11 +52,14 @@ export function browserMockCompletion(messages = [], tools = []) {
 // Authorization.
 
 export class LlmClient {
-  constructor({ baseUrl, apiKey, trace, mock }) {
+  constructor({ baseUrl, apiKey, trace, mock, publisherFunded }) {
     this.baseUrl = (baseUrl || "").replace(/\/$/, "");
-    this.apiKey = apiKey || "";
     this.trace = trace;
     this.mock = !!mock;
+    // A publisher-funded router is paid for by the site. It needs no key and
+    // never receives the visitor's.
+    this.publisherFunded = !!publisherFunded;
+    this.apiKey = this.publisherFunded ? "" : apiKey || "";
   }
 
   // messages: [{role, content, tool_calls?, tool_call_id?, name?}]
@@ -66,9 +71,10 @@ export class LlmClient {
     // placeholder "demo" to a live provider (which returns a confusing 401). This
     // happens e.g. when a shared/reloaded URL keeps the proxy router but no saved
     // BYOK profile/key is available in this browser.
-    if (!this.mock && (!this.apiKey || this.apiKey === "demo")) {
-      throw new Error(`An LLM API key is required for ${hostOf(this.baseUrl) || "the configured provider"}. Open ⚙ BYOK / router settings, enter your key, then click Apply, save & reload. Your key stays in this browser and is sent only to the configured provider.`);
+    if (!this.mock && !this.publisherFunded && (!this.apiKey || this.apiKey === "demo")) {
+      throw new Error(`An AI provider key is required for ${hostOf(this.baseUrl) || "the configured provider"}. Open ⚙ AI model settings, paste your key, then select Save and start. Your key stays in this browser and is sent only to the configured provider.`);
     }
+    assertModelForRouter(model, this.mock, hostOf(this.baseUrl));
     const span = this.trace?.start("model_call", {
       parent: parentSpan,
       origin,
@@ -76,7 +82,7 @@ export class LlmClient {
       mock: this.mock,
       routerHost: hostOf(this.baseUrl),
       endpoint: `${this.baseUrl}/chat/completions`,
-      keySource: this.apiKey ? "local BYOK (not shown)" : "none",
+      keySource: this.publisherFunded ? "none: paid for by this site" : this.apiKey ? "local BYOK (not shown)" : "none",
       toolNames: (tools || []).map((t) => t.function.name),
     });
 
@@ -110,17 +116,28 @@ export class LlmClient {
         });
         return result;
       }
+      const headers = {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      };
+      if (hostOf(this.baseUrl) === "api.anthropic.com") {
+        headers["anthropic-dangerous-direct-browser-access"] = "true";
+      }
       const resp = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
+        headers,
         body: JSON.stringify(body),
         signal,
       });
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
+        // A publisher-funded router's plain-text refusal (its free allowance is used
+        // up, say) is written for the visitor, so show it as it is. The trace keeps the
+        // status, and an empty body falls back to the usual message.
+        if (this.publisherFunded && txt.trim() && (resp.headers.get("Content-Type") || "").startsWith("text/plain")) {
+          this.trace?.update(span, { httpStatus: resp.status });
+          throw new Error(txt.slice(0, 300));
+        }
         throw new Error(`LLM HTTP ${resp.status}: ${txt.slice(0, 300)}`);
       }
 
@@ -139,12 +156,13 @@ export class LlmClient {
       });
       return result;
     } catch (err) {
+      const friendlyError = ProviderError.friendly(err, this.baseUrl);
       if (err?.name === "AbortError" && signal?.aborted) {
         this.trace?.end(span, { status: "steered", interrupted: true });
       } else {
-        this.trace?.fail(span, err);
+        this.trace?.fail(span, friendlyError);
       }
-      throw err;
+      throw friendlyError;
     }
   }
 
@@ -179,11 +197,14 @@ export class LlmClient {
       }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0;
+          const idx = LlmClient.toolCallSlot(toolCalls, tc);
           if (!toolCalls[idx]) toolCalls[idx] = { id: tc.id, type: "function", function: { name: "", arguments: "" } };
           if (tc.id) toolCalls[idx].id = tc.id;
           if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
           if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+          // Gemini 3 puts a thought signature here. It rejects the next request unless
+          // the signature comes back on the same call, so keep the field as received.
+          if (tc.extra_content) toolCalls[idx].extra_content = tc.extra_content;
         }
       }
       if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -214,5 +235,23 @@ export class LlmClient {
     }
 
     return { content, toolCalls: toolCalls.filter(Boolean), finishReason, usage, model };
+  }
+
+  /**
+   * Return the slot in toolCalls that one streamed tool-call piece belongs to.
+   *
+   * Most routers number each call with index. Gemini sends each call whole and with no
+   * index, so a piece with a new id starts a new call.
+   *
+   * :param toolCalls: The calls put together so far, one per slot.
+   * :param piece: One entry of a chunk's delta.tool_calls.
+   * :return: The slot number.
+   */
+  static toolCallSlot(toolCalls, piece) {
+    if (Number.isInteger(piece.index)) return piece.index;
+    const last = toolCalls.length - 1;
+    // A piece with no id, or the same id, continues the call before it.
+    if (last >= 0 && (!piece.id || piece.id === toolCalls[last]?.id)) return last;
+    return toolCalls.length;
   }
 }
