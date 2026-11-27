@@ -1,0 +1,19 @@
+[project]
+name = "ifc-geometry-repro"
+version = "0.1.0"
+description = "Capture and replay a local geometric discrepancy in an IFC model"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "ifcopenshell==0.8.5",
+    "ifcpatch==0.9.0",
+    "numpy==2.5.5",
+]
+
+[dependency-groups]
+dev = ["pytest==9.2.0"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

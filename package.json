@@ -1,0 +1,6 @@
+{
+  "name": "ifc-geometry-repro",
+  "private": true,
+  "engines": {"node": ">=20"},
+  "dependencies": {"web-ifc": "0.0.77"}
+}

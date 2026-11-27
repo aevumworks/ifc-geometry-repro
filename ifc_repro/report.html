@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>IFC Geometry Repro</title>
+<style>
+:root{color-scheme:dark;--paper:#0c1523;--panel:#121f31;--light:#e9f0fa;--quiet:#adbed5;--line:#2a3d56;--blue:#56c8f1;--amber:#ffb266}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--light);font:16px/1.5 system-ui,sans-serif}
+main{max-width:1320px;margin:auto;padding:clamp(1rem,4vw,3.4rem)}
+header{padding-block-end:1.35rem;border-block-end:1px solid var(--line);margin-block-end:1.5rem}
+h1{font-size:clamp(1.8rem,4.5vw,3.25rem);line-height:1.05;letter-spacing:-.045em;margin:0 0 .5rem}
+h2{font-size:1.1rem;margin:0 0 .65rem}
+p{margin:.35rem 0 1rem}
+code{overflow-wrap:anywhere}
+.muted,small{color:var(--quiet)}
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(16rem,20rem);gap:1rem;align-items:start}
+section,aside{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(.8rem,2vw,1.3rem)}
+canvas{width:100%;height:auto;display:block;background:#0b1727;border:1px solid var(--line);border-radius:10px;cursor:crosshair}
+header p{margin:0}
+fieldset{border:0;padding:0;margin:0 0 .7rem;min-width:0}
+legend{font-weight:650;margin:0 0 .45rem}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
+label{display:block;font-size:.9rem}
+input,button{font:inherit;border:1px solid #62809f;border-radius:7px;min-height:48px}
+input{width:100%;background:#0b1727;color:var(--light);padding:.42rem .58rem}
+input:focus-visible,button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
+button{cursor:pointer;padding:.52rem .85rem;background:#d9edff;color:#0b1b2e;font-weight:700}
+button.secondary{background:transparent;color:var(--light)}
+button[aria-pressed="true"]{color:var(--paper);background:var(--blue)}
+.toolbar,.actions{display:flex;flex-wrap:wrap;gap:.45rem;margin-block:.75rem}
+.layer-key{display:flex;flex-wrap:wrap;gap:.8rem;margin-block:.65rem 0;color:var(--quiet)}
+.marker{display:inline-block;width:.75em;height:.75em;border:1px solid currentColor;margin-inline-end:.4em}
+.marker.a{background:var(--blue)}.marker.b{background:var(--amber)}
+.depth{display:grid;grid-template-columns:8rem minmax(0,1fr);gap:.45rem 1rem;align-items:center}
+.track{position:relative;height:1.15rem;background:linear-gradient(90deg,#243650,#314865);border-radius:3px}
+.tick{position:absolute;top:0;bottom:0;width:3px;background:var(--blue)}
+.tick.web{background:var(--amber)}
+.output{margin-block:1rem 0;padding-block-start:.85rem;border-block-start:1px solid var(--line)}
+.verdict{font-weight:750;font-size:1.25rem;margin-block:.2rem .65rem}
+dl{margin:0} dt{font-weight:650;margin-block:.45rem .2rem}
+dd{margin:0;color:var(--quiet);overflow-wrap:anywhere}
+#capture{margin-block-start:1rem}
+[hidden]{display:none}
+@media(max-width:780px){.workspace{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>IFC Geometry Repro</h1>
+<p class="muted">GlobalId <code id="guid"></code></p>
+</header>
+<div class="workspace">
+<section aria-labelledby="projection-heading">
+<h2 id="projection-heading">Element projection</h2>
+<div class="toolbar" aria-label="Visible engines">
+<button class="secondary view" type="button" data-view="both" aria-pressed="true">Overlay</button>
+<button class="secondary view" type="button" data-view="IfcOpenShell" aria-pressed="false">IfcOpenShell</button>
+<button class="secondary view" type="button" data-view="web-ifc" aria-pressed="false">web-ifc</button>
+</div>
+<canvas id="plot" width="1000" height="570" aria-label="Projected surfaces. Select coordinates using the measurement form.">Use the numeric coordinates to measure a ray.</canvas>
+<p class="layer-key"><span><i class="marker a" aria-hidden="true"></i>IfcOpenShell</span><span><i class="marker b" aria-hidden="true"></i>web-ifc</span></p>
+<h2>Crossings along the ray</h2>
+<div class="depth" aria-hidden="true">
+<span>IfcOpenShell</span><div id="depth-left" class="track"></div>
+<span>web-ifc</span><div id="depth-right" class="track"></div>
+</div>
+</section>
+<aside aria-labelledby="measure-heading">
+<h2 id="measure-heading">Ray measurement</h2>
+<p class="muted">Select a point on the projection or enter its coordinates.</p>
+<form id="measure" aria-labelledby="measure-heading">
+<fieldset><legend>World coordinates in metres</legend>
+<div class="form-grid">
+<label for="u"><span id="u-label"></span><input id="u" name="u" type="number" step="any" required></label>
+<label for="v"><span id="v-label"></span><input id="v" name="v" type="number" step="any" required></label>
+</div></fieldset>
+<div class="actions"><button type="submit">Measure</button><button id="save" class="secondary" type="button">Save probe</button></div>
+</form>
+<div class="output" role="status" aria-live="polite">
+<p class="muted" id="range"></p>
+<p class="verdict" id="verdict"></p>
+<dl><dt>IfcOpenShell</dt><dd id="left"></dd><dt>web-ifc</dt><dd id="right"></dd></dl>
+<p id="expected" class="muted"></p>
+</div>
+</aside>
+</div>
+<section id="capture" hidden>
+<h2>Capture</h2><p id="reduction"></p><ol id="steps"></ol>
+</section>
+<noscript><p>JavaScript is needed for interactive measurements. Use the CLI to inspect or replay this case.</p></noscript>
+</main>
+<script type="application/json" id="model">__MODEL__</script>
+<script>__SCRIPT__</script>
+</body>
+</html>

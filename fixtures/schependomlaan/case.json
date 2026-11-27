@@ -1,0 +1,64 @@
+{
+  "format": 1,
+  "versions": {
+    "IfcOpenShell": "0.8.5",
+    "web-ifc": "0.0.77",
+    "IfcPatch": "0.9.0",
+    "probe": 1
+  },
+  "probe": {
+    "guid": "3AuBloy8rB2eQ0HbTV6Kmm",
+    "axis": "y",
+    "u": 20.9039135096511,
+    "v": 9.77440973505033,
+    "start": 0.9941002162288786,
+    "end": 9.505899721033519,
+    "tolerance": 0.0001,
+    "expected": null,
+    "source_sha256": "2c3565ca1904f2aa61adab92024cf3755b2c5b21a498144d3094d7cb58cebec7"
+  },
+  "source_sha256": "2c3565ca1904f2aa61adab92024cf3755b2c5b21a498144d3094d7cb58cebec7",
+  "model_sha256": "a72a90e95c8a4908c7a8a216a7470294d79d2317ad429646d3a6bad41d74fbb0",
+  "original": {
+    "elements": 3714,
+    "bytes": 49286967,
+    "hits": {
+      "IfcOpenShell": [
+        1.3960865183301683,
+        9.108752537393007
+      ],
+      "web-ifc": [
+        1.3960866039931275,
+        7.164877999134326
+      ]
+    }
+  },
+  "reduced": {
+    "elements": 1,
+    "bytes": 20791,
+    "hits": {
+      "IfcOpenShell": [
+        1.3960865183301683,
+        9.108752537393007
+      ],
+      "web-ifc": [
+        1.3960866039931275,
+        7.164877999134326
+      ]
+    }
+  },
+  "trace": [
+    {
+      "step": "spatial container",
+      "accepted": true,
+      "elements": 513,
+      "bytes": 6788195
+    },
+    {
+      "step": "element and opening dependencies",
+      "accepted": true,
+      "elements": 1,
+      "bytes": 20791
+    }
+  ]
+}
